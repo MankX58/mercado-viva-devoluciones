@@ -1,5 +1,9 @@
 import { useState } from "react";
+import { ClipboardList } from "lucide-react";
 import { testOrders, steps } from "../data/orders";
+import { createRefund, getActiveRefundForOrder, revertRefund } from "./db/refunds";
+import { AdminRefundsView } from "../components/returns/AdminRefundsView";
+import { AlreadyRefundedModal } from "../components/returns/AlreadyRefundedModal";
 import { FeedbackModal } from "../components/returns/FeedbackModal";
 import { Header } from "../components/returns/Header";
 import { HelpPanel } from "../components/returns/HelpPanel";
@@ -11,6 +15,7 @@ import { SearchOrder } from "../components/returns/SearchOrder";
 import { SuccessModal } from "../components/returns/SuccessModal";
 
 export default function Page() {
+  const [view, setView] = useState("returns"); // "returns" | "admin"
   const [step, setStep] = useState(0);
   const [order, setOrder] = useState("");
   const [reason, setReason] = useState("");
@@ -20,8 +25,10 @@ export default function Page() {
   const [orderFound, setOrderFound] = useState(null);
   const [completed, setCompleted] = useState(false);
   const [reviewDecision, setReviewDecision] = useState(null);
+  const [existingRefund, setExistingRefund] = useState(null);
+  const [reverting, setReverting] = useState(false);
 
-  function findOrder(value = order) {
+  async function findOrder(value = order) {
     const normalizedOrder = value.trim().toUpperCase();
 
     if (!normalizedOrder) {
@@ -42,7 +49,38 @@ export default function Page() {
     setOrder(foundOrder.id);
     setOrderFound(foundOrder);
     setReviewDecision(null);
+
+    // Verifica si este pedido ya tiene un reembolso activo registrado.
+    try {
+      const active = await getActiveRefundForOrder(foundOrder.id);
+      if (active) {
+        setExistingRefund(active);
+        return;
+      }
+    } catch (error) {
+      console.error("No se pudo verificar reembolsos previos:", error);
+    }
+
     setStep(1);
+  }
+
+  async function revertExistingRefund() {
+    if (!existingRefund) return;
+
+    setReverting(true);
+    try {
+      await revertRefund(existingRefund.id);
+      setExistingRefund(null);
+      setStep(1);
+    } catch (error) {
+      console.error(error);
+      setExistingRefund(null);
+      setNotice(
+        "No pudimos revertir el reembolso. Intenta de nuevo desde \"Ver reembolsos registrados\".",
+      );
+    } finally {
+      setReverting(false);
+    }
   }
 
   function confirmReturn() {
@@ -54,8 +92,24 @@ export default function Page() {
     setStep(2);
   }
 
-  function finishReturn() {
+  async function finishReturn() {
     setNotice(null);
+
+    try {
+      await createRefund({
+        orderId: orderFound.id,
+        product: orderFound.product,
+        amount: orderFound.amount,
+        reason,
+        refundMethod: refund,
+      });
+    } catch (error) {
+      console.error(error);
+      setNotice(
+        "El reembolso se procesó, pero no pudimos guardarlo en la base de datos.",
+      );
+    }
+
     setCompleted(true);
   }
 
@@ -69,6 +123,7 @@ export default function Page() {
     setActionFeedback(null);
     setCompleted(false);
     setReviewDecision(null);
+    setExistingRefund(null);
   }
 
   function acceptReview() {
@@ -90,19 +145,37 @@ export default function Page() {
     setActionFeedback("Política de devoluciones disponible");
   }
 
+  if (view === "admin") {
+    return (
+      <main className="min-h-screen bg-background text-foreground">
+        <Header />
+        <AdminRefundsView onBack={() => setView("returns")} />
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-background text-foreground">
       <Header />
 
       <div className="mx-auto max-w-6xl px-4 py-7 sm:px-5 sm:py-8 lg:px-8 lg:py-12">
-        <div className="mb-8 max-w-2xl animate-fade-up sm:mb-10">
-          <h1 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
-            Procesar una devolución
-          </h1>
-          <p className="mt-3 text-pretty text-base leading-7 text-muted-foreground">
-            Busca el pedido, revisa si cumple las condiciones y completa el
-            reembolso en pocos pasos.
-          </p>
+        <div className="mb-8 flex flex-wrap items-start justify-between gap-4 animate-fade-up sm:mb-10">
+          <div className="max-w-2xl">
+            <h1 className="text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
+              Procesar una devolución
+            </h1>
+            <p className="mt-3 text-pretty text-base leading-7 text-muted-foreground">
+              Busca el pedido, revisa si cumple las condiciones y completa el
+              reembolso en pocos pasos.
+            </p>
+          </div>
+          <button
+            onClick={() => setView("admin")}
+            className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-border px-4 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ClipboardList className="size-4" />
+            Ver reembolsos registrados
+          </button>
         </div>
 
         <ProgressSteps steps={steps} currentStep={step} />
@@ -155,6 +228,15 @@ export default function Page() {
           message={actionFeedback}
           orderId={orderFound?.id}
           onClose={() => setActionFeedback(null)}
+        />
+      )}
+
+      {existingRefund && (
+        <AlreadyRefundedModal
+          refund={existingRefund}
+          reverting={reverting}
+          onRevert={revertExistingRefund}
+          onClose={() => setExistingRefund(null)}
         />
       )}
 
